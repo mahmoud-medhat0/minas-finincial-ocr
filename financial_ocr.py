@@ -39,7 +39,8 @@ class TextNormalizer:
         
         # Remove common OCR artifacts (noise)
         # Specifically targeting some Arabic/Mixed character noise observed in screenshots
-        text = re.sub(r'[|_~‎‏]+', '', text)
+        # Include LRM (\u200e) and RLM (\u200f) and other invisible format chars
+        text = re.sub(r'[\u200e\u200f\u202a-\u202e\u2060-\u2069|_~]+', '', text)
         
         # Standardize spaces and line breaks (keep line breaks but normalize them)
         text = re.sub(r'[ \t]+', ' ', text)
@@ -98,12 +99,51 @@ class DocumentOCR:
         
         try:
             img = Image.open(image_path)
-            # Try PSM 3 (auto) and 6 (uniform block) to get more text
-            text3 = pytesseract.image_to_string(img, lang='ara+eng', config='--psm 3')
-            text6 = pytesseract.image_to_string(img, lang='ara+eng', config='--psm 6')
             
-            # Combine or pick best? Combining with separator is often better for rule-based
-            return text3 + "\n---ALT-OCR---\n" + text6
+            # Upscale and Grayscale
+            if img.width < 1500:
+                scale = 2000 / img.width
+                img = img.resize((int(img.width * scale), int(img.height * scale)), Image.Resampling.LANCZOS)
+            
+            img = img.convert('L')
+            
+            # Convert to OpenCV format (numpy array)
+            # PIL Image (L) -> numpy array
+            import numpy as np
+            import cv2
+            
+            img_np = np.array(img)
+            
+            # Use Otsu's thresholding which seemed robust in tests
+            # But first check if it's RGB or Grayscale
+            if len(img_np.shape) == 3:
+                 img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+            
+            # Apply slightly stronger sharpening first
+            kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+            img_np = cv2.filter2D(img_np, -1, kernel)
+            
+            # Otsu's Binarization
+            ret, thresh = cv2.threshold(img_np, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            # Convert back to PIL
+            img = Image.fromarray(thresh)
+            
+            results = []
+            # We'll use 4, 3, 6, 11
+            # PSM 4 is best for the table structure
+            # PSM 11 is best for catching stray bits the others miss
+            for psm in [4, 3, 6, 11]:
+                text = pytesseract.image_to_string(img, lang='ara+eng', config=f'--psm {psm}')
+                results.append(f"--- PSM {psm} ---\n{text}")
+                
+                # Also try inverted for PSM 4 if it's struggling
+                if psm == 4 and len(text.strip()) < 100:
+                     inv_img = ImageOps.invert(img)
+                     inv_text = pytesseract.image_to_string(inv_img, lang='ara+eng', config='--psm 4')
+                     results.append(f"--- PSM 4 INV ---\n{inv_text}")
+            
+            return "\n".join(results)
         except Exception as e:
             logging.error(f"Error OCR-ing image: {e}")
             return ""
@@ -161,7 +201,11 @@ class FinancialParser:
             "date": None,
             "sender": None,
             "receiver": None,
+            "receiver_name": None,
             "iban": None,
+            "status": None,
+            "transaction_type": None,
+            "comment": None,
             "raw_text": raw_text,
             "evidence": {}
         }
@@ -172,10 +216,19 @@ class FinancialParser:
         else:
             self._parse_with_template()
             
-        # Specific fallback for currency if template is BANKAK and it's missing
-        if self.template and self.template["name"] == "BANKAK" and not self.results.get("currency"):
-            self.results["currency"] = "SDG"
-            self.results["evidence"]["currency_fallback"] = "Defaulted to SDG for BANKAK"
+        # BANKAK specific greedy search first
+        if self.template and self.template["name"].startswith("BANKAK"):
+             if not self.results.get("currency"):
+                  self.results["currency"] = "SDG"
+                  self.results["evidence"]["currency_fallback"] = "Defaulted to SDG for BANKAK"
+             if not self.results.get("amount"):
+                  self._greedy_bankak_amount_search()
+             if not self.results.get("receiver_name"):
+                  self._greedy_bankak_name_search()
+             if not self.results.get("status"):
+                  self._greedy_bankak_status_search()
+             if not self.results.get("sender") or not self.results.get("receiver"):
+                  self._greedy_bankak_account_search()
 
         # Fallbacks for missing required fields
         if not self.results.get("amount"):
@@ -189,12 +242,14 @@ class FinancialParser:
 
         if not self.results.get("receiver"):
             self._greedy_receiver_search()
-        
+
         # Always run greedy name search to find the best candidate (especially from ALT-OCR)
         self._greedy_receiver_name_search()
         
-        if not self.results.get("date"):
-            self._greedy_date_search()
+        # Date validation and retry
+        if not self.results.get("date") or not self._is_valid_date(self.results.get("date")):
+             self.results["date"] = None
+             self._greedy_date_search()
         
         # Post-process to remove noise and handle RTL digit reversals
         self._post_process_results()
@@ -202,32 +257,89 @@ class FinancialParser:
         self.results["confidence"] = self._calculate_confidence()
         return self.results
 
+    def _is_valid_date(self, date_str: Optional[str]) -> bool:
+        if not date_str: return False
+        try:
+             # Basic checks for obvious OCR failures like "48-Jan"
+             # Extract day portion
+             day_match = re.match(r'(\d{1,2})', date_str.strip())
+             if day_match:
+                  day = int(day_match.group(1))
+                  if day > 31 or day < 1: return False
+             return True
+        except:
+             return False
+
     def _post_process_results(self):
         """Final cleanup of results to remove noise."""
-        EXCLUDE = ["التفاصيل", "تمت", "العملية", "نجاح", "معاملة", "Powered", "نفقات", "المزيد", "رقم الموبايل", "N/A", "التعليق", "إسم المرسل اليه", "To Account Title"]
-        for field in ["sender", "receiver", "receiver_name"]:
+        EXCLUDE = ["التفاصيل", "تمت", "العملية", "معاملة", "Powered", "نفقات", "المزيد", "رقم الموبايل", "N/A", "التعليق", "إسم المرسل اليه", "To Account Title", "نوع العملية", "الحالة", "yoT", "Glue", "pol", "pwld", "pola", "pwl"]
+        
+        # Common OCR mangles for BANKAK
+        MANGLES = {
+            "al": "إلى",
+            "els": "نجاح",
+            "ol": "إلى",
+            "yoT": "",
+            "Glue": ""
+        }
+        
+        for field in ["sender", "receiver", "receiver_name", "status", "transaction_type", "comment"]:
             val = self.results.get(field)
             if val:
-                # Remove common noise phrases from the middle of the text
-                for ex in EXCLUDE:
-                    val = val.replace(ex, "").strip()
+                # Replace common mangles
+                if self.template and self.template["name"].startswith("BANKAK"):
+                    for mangle, replacement in MANGLES.items():
+                        val = re.sub(rf'\b{mangle}\b', replacement, val, flags=re.IGNORECASE)
+
+                # Remove common noise phrases
+                for noise in EXCLUDE:
+                    pattern = re.compile(re.escape(noise), re.IGNORECASE)
+                    val = pattern.sub("", val).strip()
                 
-                # Special handling for account numbers
+                # Cleanup specific fields
                 if field in ["sender", "receiver"]:
                     # Keep only digits for accounts
                     cleaned = re.sub(r'[^\d]', '', val)
                     
-                    # Heuristic for RTL reversal: If it's Bankak and looks like a branch/account split
-                    # Bankak accounts are usually 16-20 digits or groups of 4.
-                    # e.g., 0160 1287 1717 0001 -> 1 1717 1287 0160
-                    if self.template and self.template["name"] == "BANKAK":
-                         # If it looks like it's missing trailing 0s and starts with 1
-                         if len(cleaned) == 13 and cleaned.startswith("1"):
-                              # OCR might have mangled it. Don't flip blindly but be aware.
+                    # Prevent concatenations (if > 19 digits, take the first 16 or last 16 depending on context)
+                    # BANKAK accounts are 16 digits (or 13).
+                    if len(cleaned) > 19:
+                        # If we have a huge number, it's likely two accounts merged.
+                        # If it's the sender field, usually the first one is the sender (if LTR) or last (if RTL reversed line)
+                        # But simpler heuristic: try to find a valid 16 digit block starting with 0 or 1
+                        blocks16 = re.findall(r'(?:0001\d{12}|\d{12}0001)', cleaned)
+                        if blocks16:
+                             # If we found valid blocks, take the first one?
+                             # Or just valid 13/16 digit seq
+                             pass
+                        
+                        # Fallback: Just truncate to 16 if it looks reasonable
+                        if cleaned.startswith("0") or cleaned.startswith("1"):
+                             cleaned = cleaned[:16]
+                    
+                    # Heuristic for RTL reversal: In BANKAK, accounts usually end in '0001' or '1'.
+                    if self.template and self.template["name"].startswith("BANKAK"):
+                         # Only flip if it STARTS with 0001 and is 16 digits
+                         # Or starts with 1 and is 13 digits
+                         # AND doesn't end with 0001 (already correct)
+                         if cleaned.endswith("0001") or (cleaned.endswith("1") and len(cleaned) == 13):
+                              # Already correct, don't flip
                               pass
+                         elif cleaned.startswith("0001") and len(cleaned) == 16:
+                              groups = [cleaned[i:i+4] for i in range(0, 16, 4)]
+                              cleaned = "".join(reversed(groups))
+                              self.results["evidence"][f"{field}_re-reversed"] = "Flipped 4-digit groups (16 digits)"
+                         elif cleaned.startswith("1") and len(cleaned) == 13:
+                              groups = [cleaned[0:1].zfill(4), cleaned[1:5], cleaned[5:9], cleaned[9:13]]
+                              cleaned = "".join(reversed(groups))
+                              self.results["evidence"][f"{field}_re-reversed"] = "Flipped 1-4-4-4 groups with padding"
                     
                     val = cleaned
                 
+                if field == "receiver_name":
+                     val = self._clean_name(val)
+                     
+                self.results[field] = val
                 # If the result is just noise or too short, clear it
                 if len(val) < 3 or val.lower() == "n/a":
                     self.results[field] = None
@@ -296,6 +408,8 @@ class FinancialParser:
 
     def _greedy_date_search(self):
         """Looks for date-like strings in the text."""
+        # 1. HH:MM:SS DD-MMM-YYYY
+        pattern0 = r'(\d{2}:\d{2}:\d{2}\s+\d{1,2}-[A-Za-z]{3,}-\d{4})'
         # 1. DD-MMM-YYYY HH:MM:SS
         pattern1 = r'(\d{1,2}-[A-Za-z]{3,}-\d{4}\s+\d{2}:\d{2}:\d{2})'
         # 2. DD-MM-YYYY
@@ -303,12 +417,14 @@ class FinancialParser:
         # 3. YYYY-MM-DD
         pattern3 = r'(\d{4}-\d{2}-\d{1,2})'
         
-        for p in [pattern1, pattern2, pattern3]:
-            match = re.search(p, self.raw_text_norm)
-            if match:
-                self.results["date"] = match.group(1)
-                self.results["evidence"]["date_greedy"] = match.group(0)
-                return
+        for p in [pattern0, pattern1, pattern2, pattern3]:
+            # Use finditer to check all candidates, not just the first one
+            for match in re.finditer(p, self.raw_text_norm):
+                val = match.group(1)
+                if self._is_valid_date(val):
+                    self.results["date"] = val
+                    self.results["evidence"]["date_greedy"] = match.group(0)
+                    return
 
     def _greedy_receiver_name_search(self):
         """Looks for receiver name near specific labels, prioritizing better matches across all OCR text."""
@@ -351,13 +467,105 @@ class FinancialParser:
             if best_cand not in (self.results.get("receiver_name") or ""):
                  self.results["evidence"]["receiver_name_greedy_improved"] = best_cand
 
+    def _greedy_bankak_account_search(self):
+        """Finds potential BANKAK accounts even without labels."""
+        # Find all groups of 12-20 digits (flexible spacing)
+        # Using a set to avoid duplicates and preserving order in a list
+        found = []
+        matches = re.findall(r'(\d[ \t\d]{8,25}\d)', self.raw_text_norm)
+        for m in matches:
+            cleaned = re.sub(r'[^\d]', '', m)
+            if len(cleaned) in [13, 16]:
+                if cleaned not in found:
+                    found.append(cleaned)
+        
+        if len(found) >= 2:
+            if not self._is_valid_account(self.results.get("sender")):
+                self.results["sender"] = found[0]
+                self.results["evidence"]["sender_bankak_greedy"] = found[0]
+            if not self._is_valid_account(self.results.get("receiver")):
+                self.results["receiver"] = found[1]
+                self.results["evidence"]["receiver_bankak_greedy"] = found[1]
+        elif len(found) == 1:
+             cand = found[0]
+             # If we have only one, try to be smart
+             if not self._is_valid_account(self.results.get("receiver")):
+                  self.results["receiver"] = cand
+                  self.results["evidence"]["receiver_bankak_greedy_single"] = cand
+
+    def _is_valid_account(self, val: Any) -> bool:
+        """Checks if a value looks like a valid (digit-based) account."""
+        if not val or not isinstance(val, str): return False
+        cleaned = re.sub(r'[^\d]', '', val)
+        return len(cleaned) >= 10
+
+    def _greedy_bankak_amount_search(self):
+        """Looks for a float that stands alone between other fields."""
+        # BANKAK amounts are often the only float with .00 or similar
+        # Broaden the search to catch it even if partial
+        potential = re.findall(r'(\d{1,}[\d,]{0,}\.\d{2})', self.raw_text_norm)
+        # Also try without the .00 if it's missing but looks like a large number
+        if not potential:
+             potential = re.findall(r'(\d{1,}[\d,]{4,})', self.raw_text_norm)
+             
+        for p in potential:
+            val = self._clean_amount(p)
+            if val and val > 10: # Minimum amount heuristic
+                # Avoid transaction ID or date
+                if p not in (self.results.get("transaction_id") or "") and p not in (self.results.get("date") or ""):
+                    # Sanity check: BANKAK amounts usually don't have spaces inside except for thousands separator
+                    self.results["amount"] = val
+                    self.results["evidence"]["amount_bankak_greedy"] = p
+                    break
+
+    def _greedy_bankak_name_search(self):
+        """Looks for common name patterns in BANKAK transaction details."""
+        # Receiver name is usually after 'إسم المرسل اليه'
+        # But if the label is missing, look for a block of Arabic words (3-5 words) 
+        # that doesn't look like a transaction type or status.
+        arabic_blocks = re.findall(r'[\u0600-\u06FF\s]{10,100}', self.raw_text_norm)
+        exclude_words = ["تحويل", "حساب", "آخر", "نجاح", "تفاصيل", "المعاملة", "العملية", "بنك", "الخرطوم"]
+        
+        for block in arabic_blocks:
+            clean_block = block.strip()
+            if len(clean_block.split()) >= 3:
+                # Check if it contains excluded words
+                if not any(word in clean_block for word in exclude_words):
+                    self.results["receiver_name"] = clean_block
+                    self.results["evidence"]["name_bankak_greedy"] = clean_block
+                    break
+
+    def _greedy_bankak_status_search(self):
+        """Looks for 'Success' or 'Available' (Nagah) keywords."""
+        # Common status words in BANKAK
+        status_keywords = {
+            "نجاح": "نجاح",
+            "Successful": "نجاح",
+            "Success": "نجاح",
+            "فشل": "فشل",
+            "Failed": "فشل",
+            "Pending": "قيد التنفيذ",
+            "els": "نجاح", 
+            "cess": "نجاح",
+            "Suc": "نجاح"
+        }
+        
+        for word, normalized in status_keywords.items():
+            if word in self.raw_text_norm:
+                self.results["status"] = normalized
+                self.results["evidence"]["status_bankak_greedy"] = word
+                return
+
     def _clean_name(self, name: str) -> str:
         """Removes common OCR noise from names."""
         # Remove any leading/trailing punctuation or noise characters
-        name = re.sub(r'^[‎‏\s\n*._-]+|[‎‏\s\n*._-]+$', '', name)
+        clean = re.sub(r'^[\s\.\-,:_|/\\©"()]+|[\s\.\-,:_|/\\©"()]+$', '', name)
         # Remove excessive stars (masking)
-        name = re.sub(r'\*+', '*', name)
-        return name
+        clean = re.sub(r'\*+', '*', clean)
+        # Remove ASCII/English noise that often appears in Arabic OCR
+        clean = re.sub(r'[a-zA-Z]{5,}', '', clean) # Remove long junk words
+        clean = re.sub(r'[#\*©]', '', clean)
+        return clean.strip()
 
     def _greedy_amount_search(self):
         """Looks for numbers near currency symbols if regex failed."""
@@ -385,18 +593,37 @@ class FinancialParser:
             if not pattern:
                 continue
             
-            match = re.search(pattern, self.raw_text_norm, re.IGNORECASE | re.MULTILINE)
-            if match:
-                group_idx = config.get("group", 1)
-                match_val = match.group(group_idx)
-                if match_val:
-                    value = match_val.strip()
+            # For amount, we want to find ALL matches and pick the best one (largest numeric value)
+            if field == "amount":
+                 matches = list(re.finditer(pattern, self.raw_text_norm, re.IGNORECASE | re.MULTILINE))
+                 best_val = 0.0
+                 best_match_str = None
+                 
+                 for match in matches:
+                      for i in range(1, len(match.groups()) + 1):
+                           if match.group(i):
+                                val = self._clean_amount(match.group(i))
+                                if val and val > best_val:
+                                     best_val = val
+                                     best_match_str = match.group(0).strip()
+                 
+                 if best_val > 0:
+                      self.results["amount"] = best_val
+                      self.results["evidence"]["amount_template"] = best_match_str
+            else:
+                match = re.search(pattern, self.raw_text_norm, re.IGNORECASE | re.MULTILINE)
+                if match:
+                    # Find first non-None group
+                    val = None
+                    for i in range(1, len(match.groups()) + 1):
+                        if match.group(i) is not None:
+                            val = match.group(i)
+                            break
                     
-                    if field == "amount":
-                        value = self._clean_amount(value)
-                    
-                    self.results[field] = value
-                    self.results["evidence"][field] = match.group(0).strip()
+                    if val:
+                        value = val.strip()
+                        self.results[field] = value
+                        self.results["evidence"][field] = match.group(0).strip()
 
     def _parse_generic(self):
         """Fallback generic parsing logic."""

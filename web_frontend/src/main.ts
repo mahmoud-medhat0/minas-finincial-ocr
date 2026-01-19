@@ -142,12 +142,15 @@ async function handleFiles(files: FileList | null, isReprocess = false) {
 function displayResults(data: any) {
   const fields = [
     { label: 'Template', value: data.template, accent: true },
-    { label: 'Amount', value: data.amount ? `${data.amount} EGP` : 'Not Found' },
+    { label: 'Amount', value: data.amount ? `${data.amount} ${data.currency || ''}` : 'Not Found' },
     { label: 'Transaction ID', value: data.transaction_id || 'Not Found' },
     { label: 'Date', value: data.date || 'Not Found' },
     { label: 'Sender', value: data.sender || 'Not Found' },
     { label: 'Receiver Account', value: data.receiver || 'Not Found' },
-    { label: 'Receiver Name', value: data.receiver_name || 'Not Found' }
+    { label: 'Receiver Name', value: data.receiver_name || 'Not Found' },
+    { label: 'Status', value: data.status || 'Not Found' },
+    { label: 'Type', value: data.transaction_type || 'Not Found' },
+    { label: 'Comment', value: data.comment || 'Not Found' }
   ];
 
   resultsGrid.innerHTML = fields.map(f => `

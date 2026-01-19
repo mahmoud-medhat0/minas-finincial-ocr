@@ -44,7 +44,10 @@ class OCRResult(BaseModel):
     date: Optional[str]
     sender: Optional[str]
     receiver: Optional[str]
-    iban: Optional[str]
+    receiver_name: Optional[str]
+    status: Optional[str]
+    transaction_type: Optional[str]
+    comment: Optional[str]
     raw_text: str
     evidence: dict
 
