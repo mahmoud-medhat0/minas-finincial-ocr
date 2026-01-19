@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Financial OCR Portal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Fira+Code&display=swap"
+    rel="stylesheet">
+</head>
+
+<body>
+  <div id="app">
+    <header class="header">
+      <h1>Financial OCR Portal</h1>
+      <p>AI-Powered Extraction for InstaPay & Bank Transfers</p>
+    </header>
+
+    <div class="selector-container">
+      <label for="template-selector">Select Layout Template:</label>
+      <select id="template-selector" class="template-dropdown">
+        <option value="Auto-Detect">Auto-Detect Template</option>
+      </select>
+    </div>
+
+    <main>
+      <div id="drop-zone" class="upload-card">
+        <span class="upload-icon">📄</span>
+        <h2>Drop your document here</h2>
+        <p>Support for PNG, JPG and PDF files</p>
+        <input type="file" id="file-input" hidden accept=".png,.jpg,.jpeg,.pdf">
+      </div>
+
+      <div id="preview-section" class="preview-panel" data-hidden="true">
+        <div class="preview-header">
+          <h3>Document Preview</h3>
+          <button id="reprocess-btn" class="reprocess-btn">
+            <span>🔄</span> Reprocess Image
+          </button>
+        </div>
+        <div id="image-preview-container" class="preview-container">
+          <!-- Image injected here -->
+        </div>
+      </div>
+
+      <div id="loading" class="loading-spinner"></div>
+
+
+      <div id="results" class="results-grid">
+        <!-- Dynamically populated -->
+      </div>
+
+      <section id="raw-text-section" class="raw-text-panel" data-hidden="true">
+        <h3 style="color: var(--text-muted); margin-bottom: 1rem; font-family: 'Inter';">Raw Extraction Evidence</h3>
+        <div id="raw-text-content"></div>
+      </section>
+    </main>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+
+</html>

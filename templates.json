@@ -1,0 +1,27 @@
+[
+  {
+    "name": "INSTAPAY",
+    "keywords": ["تمت العملية", "بنجاح", "InstaPay", "معاملة ناجحة", "تم التحويل"],
+    "fields": {
+      "amount": { "pattern": "(?:مبلغ|Amount|مجع|معع|مج)[\\s\\n]*([\\d,]{2,}(?:[.,]\\d{2})?)", "group": 1 },
+      "currency": { "pattern": "(EGP|جنيه|SAR|SDG)", "group": 1 },
+      "transaction_id": { "pattern": "(?:المرجع|رقم العملية|Reference|ID)[\\s\\n]*(\\d{10,20})", "group": 1 },
+      "date": { "pattern": "(\\d{1,2}\\s+[A-Za-z]{3,}\\s+\\d{4})", "group": 1 },
+      "sender": { "pattern": "(?:من|From)[\\s\\n]*([^\\n\\r|]{3,}(?:[\\n\\r][^\\n\\r|]{3,})?)", "group": 1 },
+      "receiver": { "pattern": "(?:إلى|To)[\\s\\n]*([^\\n\\r|]{3,}(?:[\\n\\r][^\\n\\r|]{3,})?)", "group": 1 }
+    }
+  },
+  {
+    "name": "BANKAK",
+    "keywords": ["Bank of Khartoum", "بنبكك", "bankak", "Khartoum", "الخرطوم"],
+    "fields": {
+      "amount": { "pattern": "(?:المبلغ|Amount)[:\\s\\n]*([\\d,]{2,}(?:[.,]\\d{2})?)", "group": 1 },
+      "currency": { "pattern": "(SDG|جنيه سوداني|EGP|جنيه)", "group": 1 },
+      "transaction_id": { "pattern": "(?:رقم العملية|Trx\\. ID)[:\\s\\n]*(\\d{8,20})", "group": 1 },
+      "date": { "pattern": "(?:التاريخ والوقت|التاريخ و الزمن|Date & Time|التاريخ|Date)[:\\s\\n]*(\\d{2}:\\d{2}:\\d{2}\\s+\\d{1,2}(?:-|\\s+)(?:[A-Za-z]{3,}|\\d{2})(?:-|\\s+)\\d{4}|\\d{1,2}(?:-|\\s+)(?:[A-Za-z]{3,}|\\d{2})(?:-|\\s+)\\d{4}(?:\\s+\\d{2}:\\d{2}:\\d{2})?)", "group": 1 },
+      "sender": { "pattern": "(?:من حساب|From Account|(?:^|\\s)من(?:\\s|$))[^0-9]*?([\\d\\s]{10,25})", "group": 1 },
+      "receiver": { "pattern": "(?:إلى حساب|الى حساب|To Account|(?:^|\\s)الى(?:\\s|$)|(?:^|\\s)إلى(?:\\s|$))[^0-9]*?([\\d\\s]{10,25})", "group": 1 },
+      "receiver_name": { "pattern": "(?:إسم المرسل اليه|إسم المرسل إليه|اسم المرسل اليه|To Account Title)[:\\s\\n]*([^\\n\\r|]{3,}(?:[\\n\\r\\t\\s]{1,5}[^\\n\\r|]{3,})?)", "group": 1 }
+    }
+  }
+]
