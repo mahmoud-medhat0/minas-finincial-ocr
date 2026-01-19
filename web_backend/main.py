@@ -43,6 +43,7 @@ class OCRResult(BaseModel):
     transaction_id: Optional[str]
     date: Optional[str]
     sender: Optional[str]
+    sender_name: Optional[str]
     receiver: Optional[str]
     receiver_name: Optional[str]
     status: Optional[str]

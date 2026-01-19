@@ -200,6 +200,7 @@ class FinancialParser:
             "transaction_id": None,
             "date": None,
             "sender": None,
+            "sender_name": None,
             "receiver": None,
             "receiver_name": None,
             "iban": None,
@@ -283,7 +284,7 @@ class FinancialParser:
             "Glue": ""
         }
         
-        for field in ["sender", "receiver", "receiver_name", "status", "transaction_type", "comment"]:
+        for field in ["sender", "sender_name", "receiver", "receiver_name", "status", "transaction_type", "comment"]:
             val = self.results.get(field)
             if val:
                 # Replace common mangles
@@ -336,7 +337,7 @@ class FinancialParser:
                     
                     val = cleaned
                 
-                if field == "receiver_name":
+                if field == "receiver_name" or field == "sender_name":
                      val = self._clean_name(val)
                      
                 self.results[field] = val
@@ -563,7 +564,7 @@ class FinancialParser:
         # Remove excessive stars (masking)
         clean = re.sub(r'\*+', '*', clean)
         # Remove ASCII/English noise that often appears in Arabic OCR
-        clean = re.sub(r'[a-zA-Z]{5,}', '', clean) # Remove long junk words
+        # clean = re.sub(r'[a-zA-Z]{5,}', '', clean) # Remove long junk words - Disabled for English names
         clean = re.sub(r'[#\*©]', '', clean)
         return clean.strip()
 

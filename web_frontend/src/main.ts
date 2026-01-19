@@ -146,6 +146,7 @@ function displayResults(data: any) {
     { label: 'Transaction ID', value: data.transaction_id || 'Not Found' },
     { label: 'Date', value: data.date || 'Not Found' },
     { label: 'Sender', value: data.sender || 'Not Found' },
+    { label: 'Sender Name', value: data.sender_name || 'Not Found' },
     { label: 'Receiver Account', value: data.receiver || 'Not Found' },
     { label: 'Receiver Name', value: data.receiver_name || 'Not Found' },
     { label: 'Status', value: data.status || 'Not Found' },

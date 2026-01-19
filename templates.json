@@ -39,5 +39,18 @@
       "transaction_type": { "pattern": "(?:(?:نوع العملية|Trans\\. Type)[:\\s\\n]{1,10}([^\\n\\r|]{3,100})|([^\\n\\r|]{3,100})[^\\n\\r]{1,10}(?:نوع العملية|Trans\\. Type))", "group": 1 },
       "comment": { "pattern": "(?:(?:التعليق|Comment)[:\\s\\n]{1,10}([^\\n\\r|]{3,100})|([^\\n\\r|]{3,100})[^\\n\\r]{1,10}(?:التعليق|Comment))", "group": 1 }
     }
+  },
+  {
+    "name": "SNB_AHLY",
+    "keywords": ["SNB", "الأهلي", "Saudi National Bank", "4030001588"],
+    "fields": {
+      "transaction_id": { "pattern": "(?:المرجع|Reference)[:\\s\\n]*(\\d{10,25})", "group": 1 },
+      "date": { "pattern": "(\\d{4}/\\d{2}/\\d{2})", "group": 1 },
+      "sender_name": { "pattern": "(?:(?:أعد ل|Prepared for)\\s+)?([^\\d\\n\\r:]{3,100}?)\\s+(?:بتاريخ|Date)", "group": 1 },
+      "sender": { "pattern": "(?:القرع|الفرع|Branch)[\\s\\S]{0,100}?(?:رقم الحساب|رقع الحساب|ركم الحساب|Account)[:\\s\\n]*(\\d{14,})", "group": 1 },
+      "receiver": { "pattern": "(?:تاريخ التنفيذ|Execution Date|ناريح|تاريخ التتقبذ)[\\s\\S]{0,100}?(?:رقم الحساب|رقع الحساب|ركم الحساب|Account)[:\\s\\n]*(\\d{14,})", "group": 1 },
+      "receiver_name": { "pattern": "(?:المستفيد|Beneficiary)[:\\s\\n]*([^\\d\\n]+)", "group": 1 },
+      "amount": { "pattern": "(?:مبلغ الإيداع|ميلع الإيداع|عبلع الإيداع|Deposit Amount)[:\\s\\n]*[#]*([\\d,]+\\.\\d{2})", "group": 1 }
+    }
   }
 ]
