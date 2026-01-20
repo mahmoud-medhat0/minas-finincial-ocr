@@ -3,8 +3,8 @@
     "name": "INSTAPAY",
     "keywords": ["تمت العملية", "بنجاح", "InstaPay", "معاملة ناجحة", "تم التحويل"],
     "fields": {
-      "amount": { "pattern": "(?:مبلغ|Amount|مجع|معع|مج)[\\s\\n]*([\\d,]{2,}(?:[.,]\\d{2})?)", "group": 1 },
-      "currency": { "pattern": "(EGP|جنيه|SAR|SDG)", "group": 1 },
+      "amount": { "pattern": "(?:(?:مبلغ|Amount|مجع|معع|مج)[\\s\\n]*([\\d,]{2,}(?:[.,]\\d{2})?)|([\\d,]{2,}(?:[.,]\\d{2})?)\\s*(?:EGP|Ecp|جنيه|SAR|SDG))", "group": 1 },
+      "currency": { "pattern": "(EGP|Ecp|ECP|جنيه|SAR|SDG)", "group": 1 },
       "transaction_id": { "pattern": "(?:المرجع|رقم العملية|Reference|ID)[\\s\\n]*(\\d{10,20})", "group": 1 },
       "date": { "pattern": "(\\d{1,2}\\s+[A-Za-z]{3,}\\s+\\d{4})", "group": 1 },
       "sender": { "pattern": "(?:من|From)[\\s\\n]*([^\\n\\r|]{3,}(?:[\\n\\r][^\\n\\r|]{3,})?)", "group": 1 },
@@ -51,6 +51,22 @@
       "receiver": { "pattern": "(?:تاريخ التنفيذ|Execution Date|ناريح|تاريخ التتقبذ)[\\s\\S]{0,100}?(?:رقم الحساب|رقع الحساب|ركم الحساب|Account)[:\\s\\n]*(\\d{14,})", "group": 1 },
       "receiver_name": { "pattern": "(?:المستفيد|Beneficiary)[:\\s\\n]*([^\\d\\n]+)", "group": 1 },
       "amount": { "pattern": "(?:مبلغ الإيداع|ميلع الإيداع|عبلع الإيداع|Deposit Amount)[:\\s\\n]*[#]*([\\d,]+\\.\\d{2})", "group": 1 }
+    }
+  },
+  {
+    "name": "ALINMA",
+    "keywords": ["alinma", "الإنماء", "Make a Transfer", "إجراء تحويل"],
+    "fields": {
+      "amount": { "pattern": "(?:المبلغ|Amount)[:\\s\\n]*([A-Z]{3}\\s*[\\d,]+\\.?\\d*)", "group": 1 },
+      "currency": { "pattern": "(SAR|USD|EUR|GBP|ريال|دولار)", "group": 1 },
+      "transaction_id": { "pattern": "(?:الرقم المرجعي|Reference #)[:\\s\\n]*([A-Z0-9]+)", "group": 1 },
+      "date": { "pattern": "(?:تاريخ العملية|Transaction Date)[:\\s\\n]*(\\d{2}:\\d{2}:\\d{2}\\s+\\d{2}-\\d{2}-\\d{4})", "group": 1 },
+      "sender": { "pattern": "(?:من حساب|From Account)[:\\s\\n]*([xX\\d\\s]{10,25})", "group": 1 },
+      "receiver": { "pattern": "(?:حساب المستفيد|BeneficiaryAccount)[:\\s\\n]*(\\d{10,25})", "group": 1 },
+      "receiver_name": { "pattern": "(?:إلى مستفيد|To beneficiary)[:\\s\\n]*([^:\\n\\r]{3,}?)(?=[^\\w\\s]*\\s*(?:حساب|Beneficiary|\\d{10}))", "group": 1 },
+      "transaction_type": { "pattern": "(?:نوع التحويل|Type)[:\\s\\n]*([^\\n\\r]{3,})", "group": 1 },
+      "comment": { "pattern": "(?:مذكرة|Memo)[:\\s\\n]*(?!(?:Transaction|Date|\\d{2}-\\d{2}-\\d{4}))([^\\n\\r]+)", "group": 1 },
+      "status": { "pattern": "(?:الحالة|Status)[:\\s\\n]*([^\\n\\r]+)", "group": 1 }
     }
   }
 ]

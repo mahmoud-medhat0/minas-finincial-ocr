@@ -1,9 +1,16 @@
 import re
 import json
+import sys
 import logging
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from pathlib import Path
+
+# Determine default Tesseract path based on OS
+if sys.platform == "win32":
+    DEFAULT_TESSERACT_CMD = r"D:\tesseract\tesseract.exe"
+else:
+    DEFAULT_TESSERACT_CMD = "/usr/bin/tesseract"
 
 # External dependencies (assuming installed as per constraints)
 try:
@@ -13,10 +20,11 @@ except ImportError:
 
 try:
     import pytesseract
-    from PIL import Image
+    from PIL import Image, ImageOps
 except ImportError:
     pytesseract = None
     Image = None
+    ImageOps = None
 
 class TextNormalizer:
     """Handles Arabic/English text normalization and digit conversion."""
@@ -97,6 +105,13 @@ class DocumentOCR:
         if not pytesseract or not Image:
             return "Error: pytesseract or Pillow not installed."
         
+        # Import here to avoid issues if not installed
+        try:
+            import numpy as np
+            import cv2
+        except ImportError:
+            return "Error: numpy or opencv-python not installed."
+        
         try:
             img = Image.open(image_path)
             
@@ -108,10 +123,6 @@ class DocumentOCR:
             img = img.convert('L')
             
             # Convert to OpenCV format (numpy array)
-            # PIL Image (L) -> numpy array
-            import numpy as np
-            import cv2
-            
             img_np = np.array(img)
             
             # Use Otsu's thresholding which seemed robust in tests
@@ -120,7 +131,10 @@ class DocumentOCR:
                  img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
             
             # Apply slightly stronger sharpening first
-            kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+            # Switched to softer sharpening to avoid adding noise to clean digital receipts (BANKAK issue)
+            # Old: [[-1,-1,-1], [-1,9,-1], [-1,-1,-1]] (Hard)
+            # New: [[0,-1,0], [-1,5,-1], [0,-1,0]] (Soft)
+            kernel = np.array([[0,-1,0], [-1,5,-1], [0,-1,0]])
             img_np = cv2.filter2D(img_np, -1, kernel)
             
             # Otsu's Binarization
@@ -134,18 +148,24 @@ class DocumentOCR:
             # PSM 4 is best for the table structure
             # PSM 11 is best for catching stray bits the others miss
             for psm in [4, 3, 6, 11]:
-                text = pytesseract.image_to_string(img, lang='ara+eng', config=f'--psm {psm}')
-                results.append(f"--- PSM {psm} ---\n{text}")
-                
-                # Also try inverted for PSM 4 if it's struggling
-                if psm == 4 and len(text.strip()) < 100:
-                     inv_img = ImageOps.invert(img)
-                     inv_text = pytesseract.image_to_string(inv_img, lang='ara+eng', config='--psm 4')
-                     results.append(f"--- PSM 4 INV ---\n{inv_text}")
+                try:
+                    text = pytesseract.image_to_string(img, lang='ara+eng', config=f'--psm {psm}')
+                    results.append(f"--- PSM {psm} ---\n{text}")
+                    
+                    # Also try inverted for PSM 4 if it's struggling
+                    if psm == 4 and len(text.strip()) < 100 and ImageOps:
+                         inv_img = ImageOps.invert(img)
+                         inv_text = pytesseract.image_to_string(inv_img, lang='ara+eng', config='--psm 4')
+                         results.append(f"--- PSM 4 INV ---\n{inv_text}")
+                except Exception as ocr_err:
+                    # Log but continue with other PSM modes
+                    results.append(f"--- PSM {psm} FAILED: {str(ocr_err)} ---")
             
             return "\n".join(results)
         except Exception as e:
-            logging.error(f"Error OCR-ing image: {e}")
+            # Return error but don't silently discard results
+            error_msg = f"Error OCR-ing image: {str(e)}"
+            print(error_msg, file=sys.stderr)  # Use stderr instead of logging
             return ""
 
 class TemplateManager:
@@ -217,6 +237,13 @@ class FinancialParser:
         else:
             self._parse_with_template()
             
+        # INSTAPAY specific greedy search first
+        if self.template and self.template["name"] == "INSTAPAY":
+             if not self.results.get("amount") or not self.results.get("currency"):
+                  self._greedy_instapay_amount_currency_search()
+             if not self.results.get("sender_name"):
+                  self._greedy_instapay_sender_name_search()
+        
         # BANKAK specific greedy search first
         if self.template and self.template["name"].startswith("BANKAK"):
              if not self.results.get("currency"):
@@ -284,6 +311,19 @@ class FinancialParser:
             "Glue": ""
         }
         
+        # Normalize currency OCR errors
+        if self.results.get("currency"):
+            currency = self.results["currency"]
+            currency_map = {
+                "Ecp": "EGP",
+                "ECP": "EGP",
+                "ecp": "EGP",
+                "جنيه": "EGP"
+            }
+            if currency in currency_map:
+                self.results["currency"] = currency_map[currency]
+                self.results["evidence"]["currency_normalized"] = f"Normalized {currency} to {currency_map[currency]}"
+        
         for field in ["sender", "sender_name", "receiver", "receiver_name", "status", "transaction_type", "comment"]:
             val = self.results.get(field)
             if val:
@@ -299,6 +339,11 @@ class FinancialParser:
                 
                 # Cleanup specific fields
                 if field in ["sender", "receiver"]:
+                    # Skip processing for handles (contains @)
+                    if '@' in val:
+                        self.results[field] = val
+                        continue
+                    
                     # Keep only digits for accounts
                     cleaned = re.sub(r'[^\d]', '', val)
                     
@@ -362,7 +407,7 @@ class FinancialParser:
             handle_str = f"{h[0]}@{h[1] or 'instapay'}"
             if not any(ex in handle_str for ex in EXCLUDE):
                 self.results["sender"] = handle_str
-                self.results["evidence"]["sender_handle"] = f"{h[0]} @ {h[1]}"
+                self.results["evidence"]["sender_handle"] = f"Found handle: {handle_str}"
                 return
 
         # 2. Look for patterns like 'من' or 'From'
@@ -396,7 +441,7 @@ class FinancialParser:
             handle_str = f"{h[0]}@{h[1] or 'instapay'}"
             if not any(ex in handle_str for ex in EXCLUDE):
                 self.results["receiver"] = handle_str
-                self.results["evidence"]["receiver_handle"] = f"{h[0]} @ {h[1]}"
+                self.results["evidence"]["receiver_handle"] = f"Found handle: {handle_str}"
                 return
 
         # 2. Look for patterns like 'إلى' or 'To'
@@ -525,7 +570,7 @@ class FinancialParser:
         # But if the label is missing, look for a block of Arabic words (3-5 words) 
         # that doesn't look like a transaction type or status.
         arabic_blocks = re.findall(r'[\u0600-\u06FF\s]{10,100}', self.raw_text_norm)
-        exclude_words = ["تحويل", "حساب", "آخر", "نجاح", "تفاصيل", "المعاملة", "العملية", "بنك", "الخرطوم"]
+        exclude_words = ["تحويل", "حساب", "آخر", "نجاح", "تفاصيل", "المعاملة", "العملية", "بنك", "الخرطوم", "التاريخ", "الزمن", "Date", "Time"]
         
         for block in arabic_blocks:
             clean_block = block.strip()
@@ -568,14 +613,84 @@ class FinancialParser:
         clean = re.sub(r'[#\*©]', '', clean)
         return clean.strip()
 
+    def _greedy_instapay_amount_currency_search(self):
+        """Specialized search for INSTAPAY amounts and currency, handling OCR noise."""
+        flat_text = self.raw_text_norm.replace('\n', ' ')
+        
+        # Look for patterns like "مم6 30,800" or "30,800 EGP" or just "30,800"
+        # The "مم6" is OCR noise for "EGP" or currency indicator
+        patterns = [
+            # OCR noise (مم6, معع, etc.) followed by amount
+            r'[\u0600-\u06FF]{1,5}\d?\s*([\d,]{2,}(?:\.\d{2})?)',
+            # Amount followed by explicit currency
+            r'([\d,]{2,}(?:\.\d{2})?)\s*(?:EGP|Ecp|ECP|جنيه)',
+            # Just standalone amount (last resort)
+            r'(?:^|\s)([\d,]{3,}(?:\.\d{2})?)(?:\s|$)'
+        ]
+        
+        for p in patterns:
+            matches = list(re.finditer(p, flat_text, re.IGNORECASE))
+            for match in matches:
+                val = self._clean_amount(match.group(1))
+                if val and val > 100:  # Minimum threshold for INSTAPAY amounts
+                    # Avoid transaction IDs
+                    if match.group(1) not in (self.results.get("transaction_id") or ""):
+                        self.results["amount"] = val
+                        self.results["evidence"]["amount_instapay_greedy"] = match.group(0)
+                        break
+            if self.results.get("amount"):
+                break
+        
+        # Extract currency (EGP for INSTAPAY)
+        if not self.results.get("currency"):
+            currency_match = re.search(r'(EGP|Ecp|ECP|جنيه)', flat_text, re.IGNORECASE)
+            if currency_match:
+                self.results["currency"] = "EGP"  # Normalize to EGP
+                self.results["evidence"]["currency_instapay"] = currency_match.group(0)
+            else:
+                # Default to EGP for INSTAPAY
+                self.results["currency"] = "EGP"
+                self.results["evidence"]["currency_instapay_default"] = "Defaulted to EGP for INSTAPAY"
+
+    def _greedy_instapay_sender_name_search(self):
+        """Looks for sender name after sender handle in INSTAPAY receipts."""
+        # In INSTAPAY, the sender name often appears on the line after the sender handle
+        sender_handle = self.results.get("sender", "")
+        if not sender_handle or '@' not in sender_handle:
+            return
+        
+        # Find the handle in the text
+        handle_pattern = re.escape(sender_handle.split('@')[0])
+        matches = list(re.finditer(handle_pattern, self.raw_text_norm, re.IGNORECASE))
+        
+        for match in matches:
+            # Look for Arabic name pattern after the handle (next 1-2 lines)
+            start_pos = match.end()
+            next_text = self.raw_text_norm[start_pos:start_pos + 200]
+            
+            # Find Arabic name pattern (3-4 words)
+            name_match = re.search(r'[\u0600-\u06FF\s]{10,80}', next_text)
+            if name_match:
+                name_candidate = name_match.group(0).strip()
+                # Filter out common noise
+                if len(name_candidate.split()) >= 3:
+                    exclude_words = ["تمت", "العملية", "بنجاح", "نفقات", "المعيشة", "Powered"]
+                    if not any(word in name_candidate for word in exclude_words):
+                        self.results["sender_name"] = self._clean_name(name_candidate)
+                        self.results["evidence"]["sender_name_instapay"] = name_candidate
+                        return
+
     def _greedy_amount_search(self):
         """Looks for numbers near currency symbols if regex failed."""
         # Clean the text even more for greedy search (flatten it)
         flat_text = self.raw_text_norm.replace('\n', ' ')
         
         patterns = [
-            r'([\d,]{2,}(?:\.\d{2})?)\s*(?:EGP|جنيه|SDG|SAR)',
-            r'(?:EGP|جنيه|SDG|SAR)\s*([\d,]{2,}(?:\.\d{2})?)',
+            # Amount followed by currency (INSTAPAY style)
+            r'([\d,]{2,}(?:\.\d{2})?)\s*(?:EGP|Ecp|ECP|جنيه|SDG|SAR)',
+            # Currency followed by amount
+            r'(?:EGP|Ecp|ECP|جنيه|SDG|SAR)\s*([\d,]{2,}(?:\.\d{2})?)',
+            # Label followed by amount
             r'(?:مبلغ|Amount|مجع|معع|مج)[:\s]*([\d,]{2,}(?:\.\d{2})?)'
         ]
         for p in patterns:
@@ -594,21 +709,34 @@ class FinancialParser:
             if not pattern:
                 continue
             
-            # For amount, we want to find ALL matches and pick the best one (largest numeric value)
+            # For amount, we want to find ALL matches and pick the best one
+            # Priority: decimal amounts > frequency > proximity to label
             if field == "amount":
                  matches = list(re.finditer(pattern, self.raw_text_norm, re.IGNORECASE | re.MULTILINE))
-                 best_val = 0.0
-                 best_match_str = None
+                 candidates = []
                  
                  for match in matches:
                       for i in range(1, len(match.groups()) + 1):
                            if match.group(i):
-                                val = self._clean_amount(match.group(i))
-                                if val and val > best_val:
-                                     best_val = val
-                                     best_match_str = match.group(0).strip()
+                                raw_match = match.group(i)
+                                val = self._clean_amount(raw_match)
+                                if val and val > 0:
+                                    # Score based on: has_decimal (100), frequency (10x count), value (1x)
+                                    has_decimal = '.' in raw_match
+                                    
+                                    # Count how many times this value appears (within 5% tolerance)
+                                    frequency = sum(1 for m in matches 
+                                                  for j in range(1, len(m.groups()) + 1)
+                                                  if m.group(j) and abs(self._clean_amount(m.group(j)) - val) / val < 0.05)
+                                    
+                                    # Score based on: has_decimal (+100), frequency (+50 per match), minimal value penalty to break ties conservatively
+                                    score = (100 if has_decimal else 0) + (frequency * 50) - (val * 0.0000001)
+                                    candidates.append((score, val, match.group(0).strip()))
                  
-                 if best_val > 0:
+                 if candidates:
+                      # Sort by score descending, pick the best
+                      candidates.sort(key=lambda x: x[0], reverse=True)
+                      best_score, best_val, best_match_str = candidates[0]
                       self.results["amount"] = best_val
                       self.results["evidence"]["amount_template"] = best_match_str
             else:
@@ -672,7 +800,9 @@ class FinancialParser:
         else:
             return "LOW"
 
-def process_document(file_path: str, templates_path: str, tesseract_cmd: Optional[str] = None, template_name: Optional[str] = None):
+def process_document(file_path: str, templates_path: str, 
+                     tesseract_cmd: Optional[str] = DEFAULT_TESSERACT_CMD, 
+                     template_name: Optional[str] = None):
     """Main pipeline for a single document."""
     ocr_engine = DocumentOCR(tesseract_cmd=tesseract_cmd)
     path = Path(file_path)
@@ -701,16 +831,26 @@ def process_document(file_path: str, templates_path: str, tesseract_cmd: Optiona
 if __name__ == "__main__":
     import sys
     import argparse
-
+    
+    # Set UTF-8 encoding for stdout for ALL platforms as requested
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8')
+        else:
+             import codecs
+             sys.stdout = codecs.getwriter("utf-8")(sys.stdout.detach())
+    except Exception as e:
+        # Fallback if something goes wrong, though reconfigure should work on Py3.7+
+        pass
+    
     parser = argparse.ArgumentParser(description="Financial Document OCR Parser")
     parser.add_argument("file", help="Path to PDF or Image file")
     parser.add_argument("--templates", default="templates.json", help="Path to templates JSON")
     
     args = parser.parse_args()
     
-    # Configure Tesseract path from user input
-    tesseract_path = r"D:\tesseract\tesseract.exe"
-    ocr_engine = DocumentOCR(tesseract_cmd=tesseract_path)
+    # Configure Tesseract path from user input (or use default)
+    # Note: process_document uses DEFAULT_TESSERACT_CMD by default now
     
     if not Path(args.file).exists():
         print(f"Error: File {args.file} not found.")

@@ -46,6 +46,7 @@ class OCRResult(BaseModel):
     sender_name: Optional[str]
     receiver: Optional[str]
     receiver_name: Optional[str]
+    iban: Optional[str]
     status: Optional[str]
     transaction_type: Optional[str]
     comment: Optional[str]
